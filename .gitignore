@@ -1,0 +1,10 @@
+﻿.venv/
+llama/
+models/
+build/
+dist/
+__pycache__/
+dbgdist/
+dbgbuild/
+*.spec
+dictate.log
