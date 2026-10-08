@@ -53,25 +53,28 @@ SHOTS = [ask("음 오늘 저녁에 어 그 치킨 먹을까 아니 피자 먹을
          {"role": "assistant", "content": "이 코드 좀 리뷰해 줄 수 있어? 급한 건 아니고."}]
 
 model = server = tray = ui = hotkey = esc = None
+ready = threading.Event()  # 로딩 중에도 녹음은 바로 시작 가능, 전사만 로딩 끝까지 대기
 
 
 def load():
     global model, server
+    if os.path.exists(LLM):  # LLM 서버는 Whisper 로딩과 동시에 띄움
+        server = subprocess.Popen([os.path.join(HERE, "llama", "llama-server.exe"), "-m", LLM, "-ngl", "99",
+                                   "-c", "4096", "--port", str(LLM_PORT), "--jinja"],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  creationflags=subprocess.CREATE_NO_WINDOW)
     gpu = ctranslate2.get_cuda_device_count() > 0  # 배터리 모드에서 dGPU가 꺼지면 CPU int8
     model = WhisperModel(WHISPER if os.path.isdir(WHISPER) else "large-v3-turbo",
                          device="cuda" if gpu else "cpu", compute_type="int8_float16" if gpu else "int8")
     transcribe(np.zeros(RATE, np.float32))  # 워밍업: 첫 호출 지연 제거
-    if os.path.exists(LLM):
-        server = subprocess.Popen([os.path.join(HERE, "llama", "llama-server.exe"), "-m", LLM, "-ngl", "99",
-                                   "-c", "4096", "--port", str(LLM_PORT), "--jinja"],
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                  creationflags=subprocess.CREATE_NO_WINDOW)
+    if server:
         for _ in range(60):
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{LLM_PORT}/health"); break
             except OSError:
                 time.sleep(0.5)
-    print("준비됨:", "GPU" if gpu else "CPU", "/ 다듬기", "켜짐" if server else "꺼짐")
+    ready.set()
+    print(time.strftime("%H:%M:%S"), "준비됨:", "GPU" if gpu else "CPU", "/ 다듬기", "켜짐" if server else "꺼짐")
 
 
 def transcribe(audio):
@@ -122,6 +125,7 @@ def paste(text):
 def finish(audio):
     with busy:
         set_icon("busy")
+        ready.wait()
         try:
             t = time.perf_counter()
             raw = transcribe(audio)
@@ -170,8 +174,6 @@ def stop_stream():
 
 def toggle():
     global stream, esc
-    if model is None:
-        return
     with lock:
         if stream is None:
             chunks.clear()
@@ -244,8 +246,8 @@ def setup(icon):
     global hotkey
     icon.visible = True
     try:
+        hotkey = keyboard.add_hotkey(cfg["hotkey"], toggle, suppress=True)  # 로딩 전에 등록: 켜자마자 말하기 가능
         load()
-        hotkey = keyboard.add_hotkey(cfg["hotkey"], toggle, suppress=True)
     except Exception:  # pystray가 setup 예외를 삼킴 → 로그·툴팁으로 드러냄
         traceback.print_exc()
         icon.title = "받아쓰기 시작 실패 — dictate.log 확인"

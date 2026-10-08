@@ -1,7 +1,10 @@
 @echo off
-rem dist\Dictate\Dictate.exe 빌드. 모델·llama.cpp는 exe에 넣지 않고 정션으로 연결(복사 없음)
+rem Build dist\Dictate\Dictate.exe. models and llama stay outside the exe, linked by junctions (no copies).
 cd /d "%~dp0"
-.venv\Scripts\pyinstaller --noconfirm --windowed --name Dictate ^
-  --collect-all faster_whisper --collect-all ctranslate2 dictate.py || exit /b 1
+rem Remove junctions first so cleaning dist never touches the real models/llama folders.
+if exist dist\Dictate\models rmdir dist\Dictate\models
+if exist dist\Dictate\llama rmdir dist\Dictate\llama
+if exist dist rmdir /s /q dist
+.venv\Scripts\pyinstaller --noconfirm --windowed --name Dictate --collect-all faster_whisper --collect-all ctranslate2 dictate.py || exit /b 1
 mklink /J dist\Dictate\models models
 mklink /J dist\Dictate\llama llama
