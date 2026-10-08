@@ -28,6 +28,7 @@ PASTE_DELAY = 0.15  # 붙여넣기 후 원래 클립보드 복원까지 대기(�
 WHISPER = os.path.join(MODELS, "whisper-large-v3-turbo")  # 없으면 HF에서 받아 캐시
 LLM = os.path.join(MODELS, "EXAONE-4.0-1.2B-Q8_0.gguf")  # 없으면 다듬기 생략
 LLM_PORT = 8089
+MIN_PEAK = 0.03  # 녹음 최대 음량이 이보다 작으면 말 없음으로 봄(무음 실측 ~0.012). 작게 말해도 무시되면 낮출 것
 CFG_PATH = os.path.join(HERE, "config.json")  # 설정 창에서 저장
 HIST_PATH = os.path.join(HERE, "history.jsonl")  # 기록 창·홈 통계
 DEFAULTS = {"hotkey": "ctrl+shift+space", "mic": "", "cleanup": True, "autostart": False, "words": []}
@@ -128,7 +129,8 @@ def finish(audio):
         ready.wait()
         try:
             t = time.perf_counter()
-            raw = transcribe(audio)
+            # 무음이면 Whisper가 "감사합니다." 같은 말을 지어냄(VAD·no_speech_prob로도 안 걸러짐, 실측) → 소리 크기로 거름
+            raw = transcribe(audio) if np.abs(audio).max() >= MIN_PEAK else ""
             text = refine(raw) if raw else raw
             print(f"[{time.perf_counter() - t:.2f}s / 음성 {len(audio) / RATE:.1f}s] {raw}\n  → {text}")
             if text:
