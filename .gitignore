@@ -8,3 +8,4 @@ dbgdist/
 dbgbuild/
 *.spec
 dictate.log
+node_modules/

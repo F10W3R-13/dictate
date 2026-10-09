@@ -5,6 +5,6 @@ rem Remove junctions first so cleaning dist never touches the real models/llama 
 if exist dist\Dictate\models rmdir dist\Dictate\models
 if exist dist\Dictate\llama rmdir dist\Dictate\llama
 if exist dist rmdir /s /q dist
-.venv\Scripts\pyinstaller --noconfirm --windowed --name Dictate --collect-all faster_whisper --collect-all ctranslate2 dictate.py || exit /b 1
+.venv\Scripts\pyinstaller --noconfirm --windowed --name Dictate --collect-all faster_whisper --collect-all ctranslate2 --add-data "web;web" dictate.py || exit /b 1
 mklink /J dist\Dictate\models models
 mklink /J dist\Dictate\llama llama

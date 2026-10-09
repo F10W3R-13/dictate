@@ -1,18 +1,19 @@
-"""Typeless 흉내 GUI: 화면 아래 플로팅 알약(녹음·처리 상태) + 트레이 '열기' 창(홈·기록·사전·설정).
+"""GUI: 화면 아래 플로팅 알약(녹음·처리 상태, tkinter) + 트레이 '열기' 창(홈·기록·사전·설정, 웹 화면).
 
-tkinter(표준 라이브러리)만 씀. tk는 메인 스레드에서만 만지고, 다른 스레드는 post()로 부탁한다.
+알약은 tkinter(표준 라이브러리). tk는 메인 스레드에서만 만지고, 다른 스레드는 post()로 부탁한다.
+창은 web/ 의 TypeScript 화면을 127.0.0.1 로컬 서버로 내주고 Edge 앱 창으로 띄운다(설치할 것 없음).
 """
-import ctypes, json, queue, time, tkinter as tk
+import ctypes, json, os, queue, secrets, subprocess, sys, threading, time, tkinter as tk, webbrowser
 from collections import deque
 from ctypes import wintypes
-from datetime import datetime
-from tkinter import ttk
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 user32 = ctypes.windll.user32
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND] + [ctypes.c_int] * 4 + [wintypes.UINT]
 FONT = "Malgun Gothic"
 BG, FG, DIM, RED, SIDE, KEY = "#1c1c1e", "#f2f2f2", "#8e8e93", "#ff453a", "#f2f2f7", "#010203"
-TYPING_WPM = 40  # '아낀 시간' 계산용 타자 속도(어절/분)
+WEB = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))), "web")
+TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
 
 
 class Pill:
@@ -84,7 +85,7 @@ class Pill:
 
 
 class App:
-    def __init__(self, cfg, save_cfg, mics, hist_path, on_cancel, on_stop):
+    def __init__(self, cfg, save_cfg, mics, hist_path, on_cancel, on_stop, status):
         try:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except OSError:
@@ -92,8 +93,9 @@ class App:
         self.root = tk.Tk()
         self.root.withdraw()
         self.s = self.root.winfo_fpixels("1i") / 96
-        self.cfg, self.save_cfg, self.mics, self.hist_path = cfg, save_cfg, mics, hist_path
-        self.level, self.q, self.main = 0.0, queue.Queue(), None
+        self.cfg, self.save_cfg, self.mics, self.hist_path, self.status = cfg, save_cfg, mics, hist_path, status
+        self.level, self.q = 0.0, queue.Queue()
+        self.web = Web(self)
         self.pill = Pill(self, self.s, on_cancel, on_stop)
         self._poll()
 
@@ -122,180 +124,72 @@ class App:
             f.writelines(json.dumps(h, ensure_ascii=False) + "\n" for h in hist)
 
     def open_main(self):
-        if self.main is None:
-            self.main = Main(self)
-        else:
-            self.main.show(self.main.page)
-            self.main.win.deiconify()
-        self.main.win.lift()
-        self.main.win.focus_force()
+        self.web.open()
 
     def refresh(self):
-        if self.main and self.main.win.state() == "normal" and self.main.page in ("홈", "기록"):
-            self.main.show(self.main.page)
+        pass  # 열려 있는 창이 3초마다 스스로 새로 읽음
 
 
-def label(parent, text, size=10, fg="#1c1c1e", bg="white", style=(), **kw):
-    return tk.Label(parent, text=text, font=(FONT, size, *style), fg=fg, bg=bg, **kw)
-
-
-def button(parent, text, cmd):
-    return tk.Button(parent, text=text, command=cmd, font=(FONT, 9), relief="flat", bg="#e5e5ea",
-                     activebackground="#d1d1d6", padx=12, pady=3, cursor="hand2")
-
-
-class Main:
-    PAGES = ("홈", "기록", "사전", "설정")
+class Web:
+    """web/ 정적 파일 + JSON API를 127.0.0.1 임의 포트로. 토큰이 맞는 요청만 받음."""
 
     def __init__(self, app):
-        self.app, s = app, app.s
-        w = self.win = tk.Toplevel(app.root, bg="white")
-        w.title("Dictate")
-        w.geometry(f"{int(760 * s)}x{int(500 * s)}")
-        w.minsize(int(600 * s), int(400 * s))
-        w.protocol("WM_DELETE_WINDOW", w.withdraw)  # 닫아도 트레이에서 계속 동작
-        side = tk.Frame(w, bg=SIDE, width=int(150 * s))
-        side.pack(side="left", fill="y")
-        side.pack_propagate(False)
-        label(side, "Dictate", 13, bg=SIDE, style=("bold",)).pack(anchor="w", padx=16, pady=(18, 14))
-        self.tabs = {}
-        for p in self.PAGES:
-            t = label(side, p, 10, bg=SIDE, anchor="w", padx=16, pady=7, cursor="hand2")
-            t.pack(fill="x", padx=6)
-            t.bind("<Button-1>", lambda e, p=p: self.show(p))
-            self.tabs[p] = t
-        self.body = tk.Frame(w, bg="white")
-        self.body.pack(side="left", fill="both", expand=True)
-        self.show("홈")
+        self.token = secrets.token_urlsafe(16)
+        web = self
 
-    def show(self, page):
-        self.page = page
-        for p, t in self.tabs.items():
-            t.configure(bg="#dcdce4" if p == page else SIDE)
-        for c in self.body.winfo_children():
-            c.destroy()
-        label(self.body, page, 16, style=("bold",)).pack(anchor="w", padx=24, pady=(18, 12))
-        {"홈": self.home, "기록": self.history, "사전": self.dictionary, "설정": self.settings}[page](self.body)
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
 
-    def home(self, f):
-        hist = self.app.history()
-        words = sum(len(h["text"].split()) for h in hist)
-        mins = sum(h["sec"] for h in hist) / 60
-        saved = max(0.0, words / TYPING_WPM - mins)
-        today = datetime.now().strftime("%Y-%m-%d")
-        stats = [("받아쓴 단어", f"{words:,}"),
-                 ("평균 속도", f"{words / mins:.0f} WPM" if mins else "-"),
-                 ("아낀 시간", f"{saved:.0f}분" if saved < 60 else f"{saved / 60:.1f}시간"),
-                 ("오늘", f"{sum(h['t'].startswith(today) for h in hist)}회")]
-        grid = tk.Frame(f, bg="white")
-        grid.pack(anchor="w", padx=24)
-        for i, (k, v) in enumerate(stats):
-            card = tk.Frame(grid, bg=SIDE, padx=18, pady=12)
-            card.grid(row=i // 2, column=i % 2, padx=(0, 12), pady=(0, 12), sticky="nsew")
-            label(card, k, 9, fg=DIM, bg=SIDE, width=16, anchor="w").pack(anchor="w")
-            label(card, v, 20, bg=SIDE, style=("bold",)).pack(anchor="w")
-        label(f, f"{self.app.cfg['hotkey']} 로 말하기 시작, 다시 눌러 끝내면 커서 자리에 붙여넣어요.",
-              9, fg=DIM).pack(anchor="w", padx=24, pady=6)
+            def send(self, code, body, kind="application/json"):
+                self.send_response(code)
+                self.send_header("Content-Type", kind + "; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
 
-    def history(self, f):
-        hist = self.app.history()[::-1]  # 최신 먼저
-        box = tk.Frame(f, bg="white")
-        box.pack(fill="both", expand=True, padx=24)
-        lb = tk.Listbox(box, activestyle="none", font=(FONT, 10), relief="flat", bg=SIDE,
-                        highlightthickness=0, selectbackground="#c7c7cc", selectforeground="#1c1c1e")
-        sb = ttk.Scrollbar(box, command=lb.yview)
-        lb.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        lb.pack(side="left", fill="both", expand=True)
-        for h in hist:
-            lb.insert("end", f" {h['t'][5:16].replace('T', ' ')}   {h['text'][:80]}")
-        txt = tk.Text(f, height=5, wrap="word", font=(FONT, 10), relief="flat", bg="#fafafa", padx=8, pady=6)
-        txt.pack(fill="x", padx=24, pady=8)
+            def ok(self):  # DNS 리바인딩·다른 사이트의 요청 막기
+                return self.headers.get("Host", "").split(":")[0] == "127.0.0.1"
 
-        def picked():
-            i = lb.curselection()
-            return hist[i[0]] if i else None
+            def do_GET(self):
+                if not self.ok():
+                    return self.send(403, b"")
+                path, _, query = self.path.partition("?")
+                if path == "/api/state":
+                    if self.headers.get("X-Token") != web.token:
+                        return self.send(403, b"")
+                    st = {"cfg": app.cfg, "mics": app.mics(), "history": app.history(), "status": app.status()}
+                    return self.send(200, json.dumps(st, ensure_ascii=False).encode())
+                if path == "/":
+                    if query != "k=" + web.token:
+                        return self.send(403, b"")
+                    path = "/index.html"
+                f = os.path.join(WEB, os.path.basename(path))
+                if os.path.splitext(f)[1] not in TYPES or not os.path.isfile(f):
+                    return self.send(404, b"")
+                with open(f, "rb") as fh:
+                    body = fh.read()
+                self.send(200, body.replace(b"__TOKEN__", web.token.encode()), TYPES[os.path.splitext(f)[1]])
 
-        def select(_=None):
-            txt.delete("1.0", "end")
-            h = picked()
-            if h:
-                txt.insert("1.0", h["text"] + (f"\n\n원문: {h['raw']}" if h["raw"] != h["text"] else ""))
+            def do_POST(self):
+                if not self.ok() or self.headers.get("X-Token") != web.token:
+                    return self.send(403, b"")
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                if self.path == "/api/cfg":
+                    err = app.save_cfg({**app.cfg, **req})
+                    return self.send(200, json.dumps({"err": err}, ensure_ascii=False).encode())
+                if self.path == "/api/history":  # 통째로 다시 씀(삭제·되돌리기)
+                    app.save_history(req["history"])
+                    return self.send(200, b"{}")
+                self.send(404, b"")
 
-        def copy():
-            h = picked()
-            if h:
-                self.win.clipboard_clear()
-                self.win.clipboard_append(h["text"])
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
-        def delete():
-            h = picked()
-            if h:
-                hist.remove(h)
-                self.app.save_history(hist[::-1])
-                self.show("기록")
-
-        lb.bind("<<ListboxSelect>>", select)
-        row = tk.Frame(f, bg="white")
-        row.pack(anchor="w", padx=24, pady=(0, 16))
-        button(row, "복사", copy).pack(side="left", padx=(0, 8))
-        button(row, "삭제", delete).pack(side="left")
-
-    def dictionary(self, f):
-        words = list(self.app.cfg["words"])
-        label(f, "잘못 알아듣는 이름·전문용어를 넣어 두면 그 표기로 받아써요.", 9, fg=DIM).pack(anchor="w", padx=24)
-        row = tk.Frame(f, bg="white")
-        row.pack(anchor="w", padx=24, pady=10)
-        e = ttk.Entry(row, width=30, font=(FONT, 10))
-        e.pack(side="left", padx=(0, 8))
-        lb = tk.Listbox(f, activestyle="none", font=(FONT, 10), relief="flat", bg=SIDE, highlightthickness=0,
-                        selectbackground="#c7c7cc", selectforeground="#1c1c1e")
-        lb.pack(fill="both", expand=True, padx=24)
-        for w in words:
-            lb.insert("end", f" {w}")
-
-        def add(_=None):
-            w = e.get().strip()
-            if w and w not in words:
-                self.app.save_cfg({**self.app.cfg, "words": words + [w]})
-                self.show("사전")
-
-        def delete():
-            i = lb.curselection()
-            if i:
-                self.app.save_cfg({**self.app.cfg, "words": [w for j, w in enumerate(words) if j != i[0]]})
-                self.show("사전")
-
-        e.bind("<Return>", add)
-        button(row, "추가", add).pack(side="left")
-        button(f, "선택 삭제", delete).pack(anchor="w", padx=24, pady=(8, 16))
-        e.focus_set()
-
-    def settings(self, f):
-        cfg = self.app.cfg
-        form = tk.Frame(f, bg="white")
-        form.pack(anchor="w", padx=24)
-        hk = tk.StringVar(value=cfg["hotkey"])
-        mic = tk.StringVar(value=cfg["mic"] or "기본 장치")
-        clean, auto = tk.BooleanVar(value=cfg["cleanup"]), tk.BooleanVar(value=cfg["autostart"])
-        rows = [("단축키", ttk.Entry(form, textvariable=hk, width=30, font=(FONT, 10))),
-                ("마이크", ttk.Combobox(form, textvariable=mic, values=["기본 장치"] + self.app.mics(),
-                                     state="readonly", width=38))]
-        for i, (k, wdg) in enumerate(rows):
-            label(form, k, 10, width=8, anchor="w").grid(row=i, column=0, sticky="w", pady=6)
-            wdg.grid(row=i, column=1, sticky="w")
-        label(form, "예: ctrl+shift+space, right ctrl, f9", 8, fg=DIM).grid(row=2, column=1, sticky="w")
-        for i, (text, var) in enumerate([("AI로 다듬기 (군말 빼고 맞춤법·문장부호 정리)", clean),
-                                         ("Windows 시작할 때 자동 실행", auto)], start=3):
-            tk.Checkbutton(form, text=text, variable=var, font=(FONT, 10), bg="white", activebackground="white",
-                           anchor="w").grid(row=i, column=0, columnspan=2, sticky="w", pady=4)
-        msg = label(f, "", 9)
-
-        def save():
-            err = self.app.save_cfg({**cfg, "hotkey": hk.get().strip().lower(),
-                                     "mic": "" if mic.get() == "기본 장치" else mic.get(),
-                                     "cleanup": clean.get(), "autostart": auto.get()})
-            msg.configure(text=err or "저장했어요", fg=RED if err else "#34c759")
-
-        button(f, "저장", save).pack(anchor="w", padx=24, pady=(14, 4))
-        msg.pack(anchor="w", padx=24)
+    def open(self):
+        url = f"http://127.0.0.1:{self.server.server_port}/?k={self.token}"
+        try:  # Edge는 Windows에 기본으로 깔려 있음. 앱 창(주소창 없는 창)으로 띄움
+            subprocess.Popen(["cmd", "/c", "start", "", "msedge", f"--app={url}", "--window-size=920,640"],
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+        except OSError:
+            webbrowser.open(url)

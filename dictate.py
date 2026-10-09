@@ -1,5 +1,5 @@
 """토글 받아쓰기: 단축키 한 번 → 녹음 시작, 다시 한 번 → 로컬 전사·다듬기 후 커서 위치에 붙여넣기.
-화면은 ui.py(플로팅 알약 + 홈·기록·사전·설정 창).
+화면은 ui.py(플로팅 알약) + web/(홈·기록·사전·설정 창, TypeScript).
 
 준비·실행·빌드는 README.md 참고.
 """
@@ -31,7 +31,7 @@ LLM_PORT = 8089
 MIN_PEAK = 0.03  # 녹음 최대 음량이 이보다 작으면 말 없음으로 봄(무음 실측 ~0.012). 작게 말해도 무시되면 낮출 것
 CFG_PATH = os.path.join(HERE, "config.json")  # 설정 창에서 저장
 HIST_PATH = os.path.join(HERE, "history.jsonl")  # 기록 창·홈 통계
-DEFAULTS = {"hotkey": "ctrl+shift+space", "mic": "", "cleanup": True, "autostart": False, "words": []}
+DEFAULTS = {"hotkey": "ctrl+shift+space", "mic": "", "cleanup": True, "autostart": False, "sounds": True, "theme": "system", "words": []}
 try:
     with open(CFG_PATH, encoding="utf-8") as f:
         cfg = {**DEFAULTS, **json.load(f)}
@@ -54,11 +54,12 @@ SHOTS = [ask("음 오늘 저녁에 어 그 치킨 먹을까 아니 피자 먹을
          {"role": "assistant", "content": "이 코드 좀 리뷰해 줄 수 있어? 급한 건 아니고."}]
 
 model = server = tray = ui = hotkey = esc = None
+gpu = False
 ready = threading.Event()  # 로딩 중에도 녹음은 바로 시작 가능, 전사만 로딩 끝까지 대기
 
 
 def load():
-    global model, server
+    global model, server, gpu
     if os.path.exists(LLM):  # LLM 서버는 Whisper 로딩과 동시에 띄움
         server = subprocess.Popen([os.path.join(HERE, "llama", "llama-server.exe"), "-m", LLM, "-ngl", "99",
                                    "-c", "4096", "--port", str(LLM_PORT), "--jinja"],
@@ -113,6 +114,11 @@ chunks, stream, busy, lock = [], None, threading.Lock(), threading.Lock()
 def set_icon(k):
     if tray:
         tray.icon = ICONS[k]
+
+
+def beep(hz):
+    if cfg["sounds"]:
+        winsound.Beep(hz, 60)
 
 
 def paste(text):
@@ -188,10 +194,10 @@ def toggle():
             set_icon("rec")
             ui.post(ui.pill.show, "rec")
             esc = keyboard.add_hotkey("esc", cancel, suppress=True)
-            winsound.Beep(880, 60)
+            beep(880)
             return
         stop_stream()
-    winsound.Beep(440, 60)
+    beep(440)
     if chunks:
         ui.post(ui.pill.show, "busy")
         threading.Thread(target=finish, args=(np.concatenate(chunks)[:, 0],), daemon=True).start()
@@ -208,7 +214,7 @@ def cancel():
     chunks.clear()
     set_icon("idle")
     ui.post(ui.pill.hide)
-    winsound.Beep(330, 60)
+    beep(330)
 
 
 def set_autostart(on):
@@ -226,7 +232,7 @@ def set_autostart(on):
 
 
 def save_cfg(new):
-    """설정 창에서 호출(tk 스레드). 실패하면 사용자에게 보일 문장을 돌려줌"""
+    """설정 창에서 호출(웹 서버 스레드). 실패하면 사용자에게 보일 문장을 돌려줌"""
     global hotkey
     if new["hotkey"] != cfg["hotkey"] and hotkey is not None:
         try:
@@ -293,7 +299,8 @@ if __name__ == "__main__":
                 server.terminate()
         sys.exit()
     import ui as gui
-    ui = gui.App(cfg, save_cfg, mics, HIST_PATH, cancel, toggle)
+    ui = gui.App(cfg, save_cfg, mics, HIST_PATH, cancel, toggle,
+                 lambda: "로딩 중" if not ready.is_set() else "준비됨 · " + ("GPU" if gpu else "CPU"))
     threading.Thread(target=run_tray, daemon=True).start()
     ui.run()  # tk는 메인 스레드에서
     os._exit(0)
