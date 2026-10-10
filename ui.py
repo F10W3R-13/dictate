@@ -13,7 +13,7 @@ user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND] + [ctypes.c_int] *
 FONT = "Malgun Gothic"
 BG, FG, DIM, RED, SIDE, KEY = "#1c1c1e", "#f2f2f2", "#8e8e93", "#ff453a", "#f2f2f7", "#010203"
 WEB = os.path.join(getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))), "web")
-TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css"}
+TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".ico": "image/x-icon"}
 
 
 class Pill:
