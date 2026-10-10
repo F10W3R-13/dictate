@@ -20,7 +20,7 @@ os.environ["PATH"] = os.path.join(HERE, "llama") + os.pathsep + os.environ["PATH
 
 import ctranslate2, keyboard, numpy as np, pyperclip, pystray, sounddevice as sd
 from faster_whisper import WhisperModel
-import icon
+from PIL import Image, ImageDraw
 
 LANG = "ko"
 RATE = 16000
@@ -100,8 +100,14 @@ def refine(text):
     return out if 0.5 * len(text) <= len(out) <= 1.2 * len(text) + 10 else text
 
 
-ICONS = {k: icon.draw(c, 64) for k, c in
-         {"load": "#888888", "idle": icon.ACCENT, "rec": "#e03131", "busy": "#f08c00"}.items()}
+def dot(color):
+    img = Image.new("RGBA", (64, 64))
+    ImageDraw.Draw(img).ellipse((6, 6, 58, 58), fill=color)
+    return img
+
+
+ICONS = {k: dot(c) for k, c in
+         {"load": "#888888", "idle": "#3163e0", "rec": "#e03131", "busy": "#f08c00"}.items()}
 chunks, stream, busy, lock = [], None, threading.Lock(), threading.Lock()
 
 
